@@ -1,4 +1,4 @@
-name: Build Windows EXE
+name: Build Windows EXE + Installer + Nuitka
 
 on:
   push:
@@ -6,11 +6,11 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  pyinstaller:
+    name: PyInstaller → EXE + setup.exe
     runs-on: windows-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -21,38 +21,87 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller
+          pip install pillow pyinstaller
+
+      - name: Generate app icon (.ico)
+        run: python tools/make_icon.py
 
       - name: Smoke check (syntax)
         run: |
-          python -m py_compile gui.py extractor.py db.py summarizer.py search.py semantic_search.py duplicates.py prompts.py theme.py widgets.py
+          python -m py_compile gui.py extractor.py db.py summarizer.py search.py semantic_search.py duplicates.py prompts.py theme.py widgets.py compressor.py patterns.py
 
       - name: Build EXE with PyInstaller
         run: pyinstaller --noconfirm build/genspark_arkhivator.spec
 
-      - name: Upload EXE artifact
+      - name: Verify selenium driver modules are inside the EXE
+        shell: pwsh
+        run: |
+          $log = Get-Content build/genspark_arkhivator/warn-genspark_arkhivator.txt -ErrorAction SilentlyContinue
+          if ($log -match "selenium.webdriver.chrome.options") { throw "selenium chrome options still missing!" }
+          Write-Host "selenium modules OK"
+
+      - name: Upload raw EXE artifact
         uses: actions/upload-artifact@v4
         with:
-          name: genspark_arkhivator-windows
+          name: genspark_arkhivator-raw
           path: dist/*.exe
           retention-days: 90
 
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
+      - name: Build Inno Setup installer (setup.exe)
+        uses: Minionguyjpro/Inno-Setup-Action@1.2.4
         with:
-          name: genspark_arkhivator-windows
+          path: build/installer.iss
+          args: /Q
 
-      - name: Create GitHub Release with EXE
-        uses: softprops/action-gh-release@v2
+      - name: Upload installer artifact (setup.exe)
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: v${{ github.run_number }}
-          name: Genspark Arkhivator v${{ github.run_number }}
-          files: "**/*.exe"
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: genspark_arkhivator-setup
+          path: dist_installer/*.exe
+          retention-days: 90
+
+  nuitka:
+    name: Nuitka → native EXE
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pillow ordered-set zstandard nuitka
+
+      - name: Generate app icon (.ico)
+        run: python tools/make_icon.py
+
+      - name: Build native EXE with Nuitka
+        run: |
+          python -m nuitka `
+            --standalone `
+            --onefile `
+            --windows-disable-console `
+            --windows-icon-from-ico=icon.ico `
+            --enable-plugin=tk-inter `
+            --include-package=selenium.webdriver `
+            --include-package=rapidfuzz `
+            --include-package=certifi `
+            --include-module=db,extractor,summarizer,theme,widgets,search,semantic_search,duplicates,prompts,compressor,patterns `
+            --include-data-file=selectors.json=. `
+            --include-data-file=reference_screenshot.png=. `
+            --include-data-file=icon.ico=. `
+            --output-filename=genspark_arkhivator_nuitka.exe `
+            gui.py
+
+      - name: Upload Nuitka artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: genspark_arkhivator-nuitka
+          path: genspark_arkhivator_nuitka.exe
+          retention-days: 90
