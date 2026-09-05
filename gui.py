@@ -1,18 +1,25 @@
 # -*- coding: utf-8 -*-
 """Genspark Arkhivator — интерфейс (Windows 11), всё в одном окне.
-Реализованные улучшения из списка 10:
-  1. Мои промпты + поиск по ним (вкладка «Мои промпты», быстрый поиск, сохранение в выбранный чат)
-  2. Подсветка совпадений в TXT после поиска (жёлтые вхождения, навигация «след. совпадение»)
-  3. Семантический офлайн-поиск (TF-IDF + словарь синонимов, кнопка «🧠 Семантика»)
-  6. Предпросмотр при наведении + экспорт чата в Markdown (кнопки в нижней панели)
-  7. Автосохранение заметок каждые 1.5 с + Ctrl+S
-  8. Кнопка «Дубликаты» — находит точные совпадения (md5) и похожие чаты (Jaccard ≥ 0.55)
+
+Версия после шагов 5–7:
+  • Интерфейс пересажен на кастомные пиксельные виджеты widgets.py
+    (MCFrame / MCButton / MCEntry / MCStatusLight / MCCheckbox / MCTabs),
+    компоновка 1:1 по reference_screenshot.png.
+  • Горячая смена темы без перезапуска (полная перестройка UI).
+  • Дефолтная тема — «Майнкрафт».
+
+Функции (все сохранены):
+  1. Вкладка «Мои промпты»: сохранение промптов, привязка к чату, двойной клик ищет похожие чаты.
+  2. Подсветка совпадений в TXT + «◀ пред. / след. ▶».
+  3. Семантический офлайн-поиск (TF-IDF + синонимы), кнопка «🧠 Семантика».
+  6. Предпросмотр при наведении на строку + экспорт чата в Markdown.
+  7. Автосохранение заметок каждые 1.5 с + Ctrl+S.
+  8. «Дубликаты и похожие»: md5 + Jaccard-шинглы.
 """
 import os
 import queue
 import sys
 import threading
-import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -20,6 +27,7 @@ import db
 import extractor
 import summarizer
 import theme as thememod
+import widgets
 import prompts as promptsm
 import duplicates
 
@@ -37,13 +45,13 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
 
-SORTS = {"начало сессии": "session", "последнее открытие": "opened", "по названию": "title"}
+SORTS = {"Начало сессии": "session", "Последнее открытие": "opened", "По названию": "title"}
 
 
 def load_settings():
     import json
     defaults = {"engine": "offline", "gemini_key": "", "gemini_model": "gemini-2.5-flash",
-                "headless": True, "theme": "Светлая"}
+                "headless": True, "theme": thememod.default_theme()}
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
         if os.path.exists(SETTINGS_PATH):
@@ -53,6 +61,8 @@ def load_settings():
                 defaults.update(d)
     except Exception:
         pass
+    if defaults.get("theme") not in thememod.list_themes():
+        defaults["theme"] = thememod.default_theme()
     return defaults
 
 
@@ -116,105 +126,140 @@ class App:
         self.match_positions = []
         self.match_idx = 0
         self.in_search = False
+        self._NOTE_DIRTY = False
+        self._autosave_started = False
+        self.preview = None
 
-        self.colors = thememod.apply_theme(root, self.settings.get("theme", "Светлая"))
         self.root.title("Genspark Arkhivator — архив чатов в TXT")
         self.root.geometry("1240x820")
         self.root.minsize(1060, 660)
 
-        self._build_top()
-        self._build_search()
-        self._build_main()
-        self._build_bottom()
+        self.colors = self._apply_theme(self.settings.get("theme"))
+        self._build_ui()
 
         db.init_db()
         promptsm.ensure_table()
         self.refresh_list()
         self._refresh_prompts_list()
-        self._note_autosave()  # п.7
+        if not self._autosave_started:
+            self._autosave_started = True
+            self._note_autosave()  # п.7
         self.root.after(200, self._drain_queue)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    # ---------------- верх: ссылка + статус ----------------
+    # ---------------- темы ----------------
+    def _apply_theme(self, name):
+        t = thememod.apply_theme(self.root, name)
+        widgets.set_theme(t, minecraft=(name == "Майнкрафт"))
+        return t
+
+    def _change_theme(self):
+        self._save_settings()
+        self.settings["theme"] = self.theme_var.get()
+        save_settings(self.settings)
+        self.colors = self._apply_theme(self.settings["theme"])
+        # горячая перестройка UI без перезапуска
+        if self.preview is not None:
+            try:
+                self.preview.destroy()
+            except Exception:
+                pass
+            self.preview = None
+        for child in list(self.root.winfo_children()):
+            try:
+                child.destroy()
+            except Exception:
+                pass
+        self._build_ui()
+        self.refresh_list()
+        self._refresh_prompts_list()
+        self._status("Тема «%s» применена без перезапуска." % self.settings["theme"], "ok")
+
+    # ---------------- построение UI ----------------
+    def _build_ui(self):
+        self._build_top()
+        self._build_search()
+        self._build_main()
+        self._build_bottom()
+
     def _build_top(self):
         t = self.colors
-        frame = tk.Frame(self.root, bg=t["bg"])
-        frame.pack(fill="x", padx=10, pady=(8, 2))
-        tk.Label(frame, text="Ссылка на чат Genspark:", bg=t["bg"], fg=t["fg"],
-                 font=t["font"]).grid(row=0, column=0, sticky="w")
+        fr = widgets.MCFrame(self.root)
+        fr.pack(fill="x", padx=8, pady=(6, 2))
+        f = fr.body
+        tk.Label(f, text="Ссылка на чат Genspark:", bg=t["panel"], fg=t["fg"],
+                 font=t["font"]).grid(row=0, column=0, sticky="w", padx=(4, 2), pady=2)
         self.url_var = tk.StringVar()
-        self.url_entry = tk.Entry(frame, textvariable=self.url_var, font=t["font"],
-                                  bg=t["entry_bg"], fg=t["entry_fg"], insertbackground=t["fg"])
-        self.url_entry.grid(row=0, column=1, sticky="ew", padx=6)
+        self.url_entry = widgets.MCEntry(f, textvariable=self.url_var)
+        self.url_entry.grid(row=0, column=1, sticky="ew", padx=4, pady=2)
         self.url_entry.bind("<Return>", lambda e: self.on_go())
-        self.go_btn = tk.Button(frame, text="ВЫГРУЗИТЬ ЧАТ", command=self.on_go,
-                                bg=t["accent"], fg="#ffffff", font=t["font"],
-                                activebackground=t["accent"], relief="raised", padx=10)
-        self.go_btn.grid(row=0, column=2, padx=(0, 6))
-        self.light = tk.Label(frame, text=" ", width=2, bg="#9a9a9a", relief="sunken")
-        self.light.grid(row=0, column=3, padx=(2, 6))
+        self.go_btn = widgets.MCButton(f, text="ВЫГРУЗИТЬ ЧАТ", command=self.on_go,
+                                       kind="green", height=30)
+        self.go_btn.grid(row=0, column=2, padx=(2, 6), pady=2)
+        self.light = widgets.MCStatusLight(f, size=22)
+        self.light.grid(row=0, column=3, padx=(0, 6), pady=2)
         self.status_var = tk.StringVar(value="Готово. Вставьте ссылку и нажмите «Выгрузить чат».")
-        tk.Label(frame, textvariable=self.status_var, bg=t["bg"], fg=t["fg"],
-                 font=t["font"], anchor="w").grid(row=0, column=4, sticky="ew")
-        frame.columnconfigure(1, weight=1)
-        frame.columnconfigure(4, weight=1)
+        tk.Label(f, textvariable=self.status_var, bg=t["panel"], fg=t["fg"],
+                 font=t["font"], anchor="w").grid(row=0, column=4, sticky="ew", padx=(0, 4))
+        f.columnconfigure(1, weight=1)
+        f.columnconfigure(4, weight=1)
         self.progress = ttk.Progressbar(self.root, mode="indeterminate")
 
-    # ---------------- поиск ----------------
     def _build_search(self):
         t = self.colors
-        bar = tk.Frame(self.root, bg=t["bg"])
-        bar.pack(fill="x", padx=10, pady=(2, 2))
+        fr = widgets.MCFrame(self.root)
+        fr.pack(fill="x", padx=8, pady=2)
+        bar = fr.body
         tk.Label(bar, text="🔍 Поиск по архиву (понимает опечатки, ищет в тексте чатов):",
-                 bg=t["bg"], fg=t["fg"], font=t["font"]).pack(side="left")
+                 bg=t["panel"], fg=t["fg"], font=t["font"]).pack(side="left", padx=(4, 2))
         self.search_var = tk.StringVar()
-        self.search_entry = tk.Entry(bar, textvariable=self.search_var, font=t["font"],
-                                     bg=t["entry_bg"], fg=t["entry_fg"], insertbackground=t["fg"])
-        self.search_entry.pack(side="left", fill="x", expand=True, padx=6)
+        self.search_entry = widgets.MCEntry(bar, textvariable=self.search_var)
+        self.search_entry.pack(side="left", fill="x", expand=True, padx=4, pady=2)
         self.search_entry.bind("<Return>", lambda e: self.on_search())
-        tk.Button(bar, text="Найти", command=self.on_search, bg=t["accent"], fg="#fff",
-                  font=t["font"]).pack(side="left")
-        tk.Button(bar, text="🧠 Семантика", command=self.on_semantic_search,
-                  bg=t["panel"], fg=t["fg"], font=t["font"]).pack(side="left", padx=4)
-        tk.Button(bar, text="Сброс", command=self.on_search_reset,
-                  bg=t["panel"], fg=t["fg"], font=t["font"]).pack(side="left", padx=4)
+        widgets.MCButton(bar, text="Найти", command=self.on_search,
+                         kind="green", height=26, width=90).pack(side="left", padx=2)
+        widgets.MCButton(bar, text="Сброс", command=self.on_search_reset,
+                         kind="wood", height=26, width=90).pack(side="left", padx=2)
+        widgets.MCButton(bar, text="🧠 Семантика", command=self.on_semantic_search,
+                         kind="wood", height=26, width=110).pack(side="left", padx=2)
         self.search_info = tk.StringVar(value="")
-        tk.Label(bar, textvariable=self.search_info, bg=t["bg"], fg=t["fg"],
+        tk.Label(bar, textvariable=self.search_info, bg=t["panel"], fg=t["fg"],
                  font=t["font"]).pack(side="left", padx=8)
 
-    # ---------------- центр ----------------
     def _build_main(self):
+        t = self.colors
         paned = ttk.Panedwindow(self.root, orient="horizontal")
-        paned.pack(fill="both", expand=True, padx=10, pady=4)
-        left = tk.Frame(paned, bg=self.colors["bg"])
-        paned.add(left, weight=3)
-        bar = tk.Frame(left, bg=self.colors["bg"])
-        bar.pack(fill="x")
-        tk.Label(bar, text="Сортировка:", bg=self.colors["bg"], fg=self.colors["fg"],
-                 font=self.colors["font"]).pack(side="left")
-        self.sort_var = tk.StringVar(value="начало сессии")
-        self.sort_cb = ttk.Combobox(bar, textvariable=self.sort_var, state="readonly", width=17,
-                                    values=list(SORTS.keys()))
+        paned.pack(fill="both", expand=True, padx=8, pady=4)
+
+        # ---- левая часть: сортировка + таблица ----
+        left_wrap = widgets.MCFrame(paned)
+        paned.add(left_wrap, weight=3)
+        left = left_wrap.body
+
+        bar = tk.Frame(left, bg=t["panel"])
+        bar.pack(fill="x", pady=(0, 2))
+        tk.Label(bar, text="Сортировка:", bg=t["panel"], fg=t["fg"],
+                 font=t["font"]).pack(side="left")
+        self.sort_var = tk.StringVar(value="Начало сессии")
+        self.sort_cb = ttk.Combobox(bar, textvariable=self.sort_var, state="readonly",
+                                    width=17, values=list(SORTS.keys()))
         self.sort_cb.pack(side="left", padx=4)
         self.sort_cb.bind("<<ComboboxSelected>>", lambda e: self.refresh_list())
         self.fav_only_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(bar, text="Только ★", variable=self.fav_only_var,
-                       command=self.refresh_list, bg=self.colors["bg"], fg=self.colors["fg"],
-                       selectcolor=self.colors["panel"], font=self.colors["font"]).pack(side="left", padx=6)
-        cols = ("status", "title", "session", "size", "fav")
+        widgets.MCCheckbox(bar, text="Только ★", variable=self.fav_only_var,
+                           command=self.refresh_list).pack(side="left", padx=6)
+
+        cols = ("status", "title", "session", "size")
         self.tree = ttk.Treeview(left, columns=cols, show="headings", selectmode="browse")
         self.tree.heading("status", text="Статус")
         self.tree.heading("title", text="Название")
         self.tree.heading("session", text="Дата сессии")
-        self.tree.heading("size", text="TXT")
-        self.tree.heading("fav", text="★")
+        self.tree.heading("size", text="Т")
         self.tree.column("status", width=90, anchor="center")
         self.tree.column("title", width=330, anchor="w")
         self.tree.column("session", width=150, anchor="w")
-        self.tree.column("size", width=80, anchor="w")
-        self.tree.column("fav", width=34, anchor="center")
+        self.tree.column("size", width=60, anchor="center")
         self._apply_row_tags()
-        # п.6: предпросмотр при наведении
         self.tree.bind("<Motion>", self._on_tree_hover)
         vsb = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
@@ -222,7 +267,9 @@ class App:
         self.tree.pack(fill="both", expand=True)
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
         self.tree.bind("<Double-1>", lambda e: self._show_txt_tab())
-        # preview bubble
+        self.tree.bind("<Button-3>", self._on_tree_menu)
+
+        # preview bubble (п.6)
         self.preview = tk.Toplevel(self.root)
         self.preview.withdraw()
         self.preview.overrideredirect(True)
@@ -231,87 +278,86 @@ class App:
                                  font=("Segoe UI", 9), wraplength=520)
         self.prev_lbl.pack()
 
-        # правая часть с вкладками
-        right = tk.Frame(paned, bg=self.colors["bg"])
-        paned.add(right, weight=3)
-        self.nb = ttk.Notebook(right)
+        # контекстное меню таблицы: редкие действия
+        self.tree_menu = tk.Menu(self.root, tearoff=0)
+        self.tree_menu.add_command(label="Экспорт чата в Markdown", command=self.export_md)
+        self.tree_menu.add_command(label="Дубликаты и похожие", command=self.find_duplicates)
+
+        # ---- правая часть: вкладки ----
+        right_wrap = widgets.MCFrame(paned)
+        paned.add(right_wrap, weight=3)
+        right = right_wrap.body
+
+        self.nb = widgets.MCTabs(right, tabs=["Текст чата (TXT)", "Мои заметки",
+                                              "Описание", "Мои промпты"])
         self.nb.pack(fill="both", expand=True)
 
-        # 1) Текст чата (TXT) — заголовки точно как в референсе
-        tab_txt = tk.Frame(self.nb, bg=self.colors["bg"])
-        self.nb.add(tab_txt, text=" Текст чата (TXT) ")
-        toolbar = tk.Frame(tab_txt, bg=self.colors["bg"])
+        # 1) Текст чата (TXT)
+        tab_txt = self.nb.tabs["Текст чата (TXT)"]
+        toolbar = tk.Frame(tab_txt, bg=t["panel"])
         toolbar.pack(fill="x")
-        tk.Button(toolbar, text="◀ пред. совпадение", command=self._prev_match,
-                  bg=self.colors["panel"], fg=self.colors["fg"],
-                  font=self.colors["font"]).pack(side="left", padx=2)
-        tk.Button(toolbar, text="след. совпадение ▶", command=self._next_match,
-                  bg=self.colors["panel"], fg=self.colors["fg"],
-                  font=self.colors["font"]).pack(side="left", padx=2)
+        widgets.MCButton(toolbar, text="◀ пред.", command=self._prev_match,
+                         kind="wood", height=24, width=80).pack(side="left", padx=2, pady=2)
+        widgets.MCButton(toolbar, text="след. ▶", command=self._next_match,
+                         kind="wood", height=24, width=80).pack(side="left", padx=2, pady=2)
         self.match_info = tk.StringVar(value="")
-        tk.Label(toolbar, textvariable=self.match_info, bg=self.colors["bg"],
-                 fg=self.colors["fg"], font=self.colors["font"]).pack(side="left", padx=8)
+        tk.Label(toolbar, textvariable=self.match_info, bg=t["panel"],
+                 fg=t["fg"], font=t["font"]).pack(side="left", padx=8)
         self.txt_view = tk.Text(tab_txt, wrap="word", font=("Consolas", 10),
-                                bg=self.colors["entry_bg"], fg=self.colors["entry_fg"],
-                                state="disabled", undo=False)
+                                bg=t["entry_bg"], fg=t["entry_fg"],
+                                state="disabled", undo=False, relief="flat", bd=4)
         self.txt_view.tag_configure("hit", background="#fff17a", foreground="#000")
         txt_sb = ttk.Scrollbar(tab_txt, orient="vertical", command=self.txt_view.yview)
         self.txt_view.configure(yscrollcommand=txt_sb.set)
         txt_sb.pack(side="right", fill="y")
         self.txt_view.pack(fill="both", expand=True)
 
-        # 2) Мои заметки — заголовок "Мои заметки"
-        tab_notes = tk.Frame(self.nb, bg=self.colors["bg"])
-        self.nb.add(tab_notes, text=" Мои заметки ")
-        self.notes = tk.Text(tab_notes, wrap="word", undo=True, font=self.colors["font"],
-                             bg=self.colors["entry_bg"], fg=self.colors["entry_fg"])
+        # 2) Мои заметки
+        tab_notes = self.nb.tabs["Мои заметки"]
+        self.notes = tk.Text(tab_notes, wrap="word", undo=True, font=t["font"],
+                             bg=t["entry_bg"], fg=t["entry_fg"], relief="flat", bd=4)
         self.notes.pack(fill="both", expand=True)
-        tk.Button(tab_notes, text="Сохранить заметки (Ctrl+S, авто каждые 1.5 с)",
-                  command=self.save_notes, bg=self.colors["accent"], fg="#fff",
-                  font=self.colors["font"]).pack(fill="x", pady=3)
+        widgets.MCButton(tab_notes, text="Сохранить заметки (Ctrl+S, авто каждые 1.5 с)",
+                         command=self.save_notes, kind="green", height=26).pack(fill="x", pady=3)
         self.notes.bind("<Control-s>", lambda e: (self.save_notes(), "break"))
         self.root.bind("<Control-s>", lambda e: (self.save_notes(), "break"))
         self.notes.bind("<<Modified>>", self._on_notes_modified)
 
-        # 3) Описание — заголовок точно как в референсе "Описание"
-        tab_desc = tk.Frame(self.nb, bg=self.colors["bg"])
-        self.nb.add(tab_desc, text=" Описание ")
-        dbar = tk.Frame(tab_desc, bg=self.colors["bg"])
+        # 3) Описание
+        tab_desc = self.nb.tabs["Описание"]
+        dbar = tk.Frame(tab_desc, bg=t["panel"])
         dbar.pack(fill="x")
         self.mode_var = tk.StringVar(value="min")
         for key, label in (("min", "Минимум (10-15)"),
                            ("med", "Среднее (40-50)"),
                            ("max", "Максимум (70+)")):
             tk.Radiobutton(dbar, text=label, value=key, variable=self.mode_var,
-                           command=self._show_desc, bg=self.colors["bg"], fg=self.colors["fg"],
-                           selectcolor=self.colors["panel"], font=self.colors["font"]).pack(side="left", padx=6)
-        tk.Button(dbar, text="Копировать", command=self._copy_desc,
-                  bg=self.colors["panel"], fg=self.colors["fg"], font=self.colors["font"]).pack(side="right")
-        self.desc_view = tk.Text(tab_desc, wrap="word", font=self.colors["font"],
-                                 bg=self.colors["entry_bg"], fg=self.colors["entry_fg"],
-                                 state="disabled")
+                           command=self._show_desc, bg=t["panel"], fg=t["fg"],
+                           selectcolor=t["entry_bg"], font=t["font"]).pack(side="left", padx=6)
+        widgets.MCButton(dbar, text="Копировать", command=self._copy_desc,
+                         kind="wood", height=24, width=110).pack(side="right", padx=2)
+        self.desc_view = tk.Text(tab_desc, wrap="word", font=t["font"],
+                                 bg=t["entry_bg"], fg=t["entry_fg"],
+                                 state="disabled", relief="flat", bd=4)
         self.desc_view.pack(fill="both", expand=True, pady=3)
 
-        # 4) Мои промпты (п.1) — новая вкладка
-        tab_prom = tk.Frame(self.nb, bg=self.colors["bg"])
-        self.nb.add(tab_prom, text=" Мои промпты ")
-        ptop = tk.Frame(tab_prom, bg=self.colors["bg"])
+        # 4) Мои промпты (п.1)
+        tab_prom = self.nb.tabs["Мои промпты"]
+        ptop = tk.Frame(tab_prom, bg=t["panel"])
         ptop.pack(fill="x")
-        tk.Label(ptop, text="Поиск по моим промптам и связка с чатом:", bg=self.colors["bg"],
-                 fg=self.colors["fg"], font=self.colors["font"]).pack(side="left")
+        tk.Label(ptop, text="Промпт:", bg=t["panel"],
+                 fg=t["fg"], font=t["font"]).pack(side="left")
         self.prompt_q = tk.StringVar()
-        self.prompt_q_entry = tk.Entry(ptop, textvariable=self.prompt_q,
-                                       bg=self.colors["entry_bg"], fg=self.colors["entry_fg"],
-                                       font=self.colors["font"])
-        self.prompt_q_entry.pack(side="left", fill="x", expand=True, padx=6)
+        self.prompt_q_entry = widgets.MCEntry(ptop, textvariable=self.prompt_q)
+        self.prompt_q_entry.pack(side="left", fill="x", expand=True, padx=6, pady=2)
         self.prompt_q_entry.bind("<Return>", lambda e: self._refresh_prompts_list())
-        tk.Button(ptop, text="Найти", command=self._refresh_prompts_list,
-                  bg=self.colors["accent"], fg="#fff", font=self.colors["font"]).pack(side="left")
-        tk.Button(ptop, text="Сохранить новый промпт", command=self._save_current_as_prompt,
-                  bg=self.colors["panel"], fg=self.colors["fg"], font=self.colors["font"]).pack(side="left", padx=4)
-        # список
+        widgets.MCButton(ptop, text="Найти", command=self._refresh_prompts_list,
+                         kind="green", height=26, width=80).pack(side="left", padx=2)
+        widgets.MCButton(ptop, text="Сохранить", command=self._save_current_as_prompt,
+                         kind="wood", height=26, width=100).pack(side="left", padx=2)
         pcols = ("when", "chat", "uses", "text")
-        self.prom_tree = ttk.Treeview(tab_prom, columns=pcols, show="headings", selectmode="browse")
+        self.prom_tree = ttk.Treeview(tab_prom, columns=pcols, show="headings",
+                                      selectmode="browse")
         self.prom_tree.heading("when", text="Когда")
         self.prom_tree.heading("chat", text="Чат")
         self.prom_tree.heading("uses", text="Запросов")
@@ -319,59 +365,62 @@ class App:
         self.prom_tree.column("when", width=140)
         self.prom_tree.column("chat", width=160)
         self.prom_tree.column("uses", width=70, anchor="center")
-        self.prom_tree.column("text", width=560)
+        self.prom_tree.column("text", width=480)
         psb = ttk.Scrollbar(tab_prom, orient="vertical", command=self.prom_tree.yview)
         self.prom_tree.configure(yscrollcommand=psb.set)
         psb.pack(side="right", fill="y")
         self.prom_tree.pack(fill="both", expand=True)
         self.prom_tree.bind("<Double-1>", self._use_prompt)
-        pbot = tk.Frame(tab_prom, bg=self.colors["bg"])
+        pbot = tk.Frame(tab_prom, bg=t["panel"])
         pbot.pack(fill="x", pady=3)
-        tk.Button(pbot, text="Вставить в ссылку и поискать похожие чаты",
-                  command=self._use_prompt, bg=self.colors["accent"], fg="#fff",
-                  font=self.colors["font"]).pack(side="left")
-        tk.Button(pbot, text="Удалить промпт", command=self._delete_prompt,
-                  bg=self.colors["panel"], fg=self.colors["fg"], font=self.colors["font"]).pack(side="left", padx=4)
+        widgets.MCButton(pbot, text="Искать похожие чаты по промпту",
+                         command=self._use_prompt, kind="green", height=26).pack(side="left", padx=2)
+        widgets.MCButton(pbot, text="Удалить промпт", command=self._delete_prompt,
+                         kind="wood", height=26, width=130).pack(side="left", padx=4)
 
-    # ---------------- низ ----------------
     def _build_bottom(self):
         t = self.colors
-        bar = tk.Frame(self.root, bg=t["bg"])
-        bar.pack(fill="x", padx=10, pady=(2, 2))
+        # ряд действий — 4 кнопки как на референсе
+        fr = widgets.MCFrame(self.root)
+        fr.pack(fill="x", padx=8, pady=(2, 0))
+        bar = fr.body
         for text, cmd in (("★ Избранное", self.toggle_fav),
                           ("Открыть TXT в редакторе", self.open_txt),
                           ("Удалить из списка", self.on_delete),
-                          ("Экспорт архива в ZIP", self.export_all),
-                          ("Экспорт чата в Markdown", self.export_md),
-                          ("Дубликаты и похожие", self.find_duplicates)):
-            tk.Button(bar, text=text, command=cmd, bg=t["panel"], fg=t["fg"],
-                      font=t["font"]).pack(side="left", padx=3)
-        bar2 = tk.Frame(self.root, bg=t["bg"])
-        bar2.pack(fill="x", padx=10, pady=(0, 6))
-        tk.Label(bar2, text="Тема:", bg=t["bg"], fg=t["fg"], font=t["font"]).pack(side="left")
-        self.theme_var = tk.StringVar(value=self.settings.get("theme", "Светлая"))
+                          ("Экспорт архива в ZIP", self.export_all)):
+            widgets.MCButton(bar, text=text, command=cmd, kind="wood",
+                             height=28).pack(side="left", padx=3, pady=2, fill="x", expand=True)
+
+        # нижняя строка настроек — как на референсе
+        fr2 = widgets.MCFrame(self.root)
+        fr2.pack(fill="x", padx=8, pady=(2, 6))
+        bar2 = fr2.body
+        tk.Label(bar2, text="Тема:", bg=t["panel"], fg=t["fg"],
+                 font=t["font"]).pack(side="left", padx=(4, 2))
+        self.theme_var = tk.StringVar(value=self.settings.get("theme", thememod.default_theme()))
         self.theme_cb = ttk.Combobox(bar2, textvariable=self.theme_var, state="readonly",
-                                     width=10, values=thememod.list_themes())
-        self.theme_cb.pack(side="left", padx=4)
+                                     width=11, values=thememod.list_themes())
+        self.theme_cb.pack(side="left", padx=2)
         self.theme_cb.bind("<<ComboboxSelected>>", lambda e: self._change_theme())
-        tk.Label(bar2, text="Описание:", bg=t["bg"], fg=t["fg"], font=t["font"]).pack(side="left", padx=(12, 2))
+        tk.Label(bar2, text="Описание:", bg=t["panel"], fg=t["fg"],
+                 font=t["font"]).pack(side="left", padx=(10, 2))
         self.engine_var = tk.StringVar(value=self.settings.get("engine", "offline"))
         self.engine_cb = ttk.Combobox(bar2, textvariable=self.engine_var, state="readonly",
                                       width=9, values=["offline", "gemini"])
-        self.engine_cb.pack(side="left", padx=4)
+        self.engine_cb.pack(side="left", padx=2)
         self.engine_cb.bind("<<ComboboxSelected>>", lambda e: self._save_settings())
-        tk.Label(bar2, text="Gemini-ключ (бесплатно: aistudio.google.com):", bg=t["bg"],
+        tk.Label(bar2, text="Gemini-ключ (бесплатно: aistudio.google.com):", bg=t["panel"],
                  fg=t["fg"], font=t["font"]).pack(side="left", padx=(10, 2))
         self.key_var = tk.StringVar(value=self.settings.get("gemini_key", ""))
-        self.key_entry = tk.Entry(bar2, textvariable=self.key_var, width=26, show="*",
-                                  bg=t["entry_bg"], fg=t["entry_fg"], insertbackground=t["fg"])
-        self.key_entry.pack(side="left", padx=4)
+        self.key_entry = widgets.MCEntry(bar2, textvariable=self.key_var, show="*", width=170)
+        self.key_entry.pack(side="left", padx=2, fill="x", expand=True)
         self.headless_var = tk.BooleanVar(value=bool(self.settings.get("headless", True)))
-        tk.Checkbutton(bar2, text="Фоновый браузер", variable=self.headless_var,
-                       command=self._save_settings, bg=t["bg"], fg=t["fg"],
-                       selectcolor=t["panel"], font=t["font"]).pack(side="left", padx=8)
-        tk.Button(bar2, text="Сохранить", command=self._save_settings,
-                  bg=t["panel"], fg=t["fg"], font=t["font"]).pack(side="left")
+        widgets.MCCheckbox(bar2, text="Фоновый браузер", variable=self.headless_var,
+                           command=self._save_settings).pack(side="left", padx=6)
+        widgets.MCButton(bar2, text="Сохранить", command=self._save_settings,
+                         kind="green", height=28, width=110).pack(side="left", padx=4)
+        tk.Label(bar2, text="Genspark", bg=t["panel"], fg=t.get("border_mid", "#756c5a"),
+                 font=("Segoe UI", 8)).pack(side="right", padx=6)
 
     # ---------------- цвета строк ----------------
     def _apply_row_tags(self):
@@ -405,8 +454,10 @@ class App:
             size = ""
         if status_text is None:
             status_text = "⏳ догружает" if cid in self.loading_ids else "✔ готов"
+        if ch.get("favorite"):
+            status_text = status_text + " ★"
         vals = (status_text, ch.get("title") or "Без названия",
-                ch.get("first_prompt_at") or "—", size, "★" if ch.get("favorite") else "")
+                ch.get("first_prompt_at") or "—", size)
         if self.tree.exists(cid):
             self.tree.item(cid, values=vals, tags=(self._row_tag(cid),))
         else:
@@ -438,6 +489,8 @@ class App:
 
     # ---------------- п.6: предпросмотр при наведении ----------------
     def _on_tree_hover(self, event):
+        if self.preview is None:
+            return
         iid = self.tree.identify_row(event.y)
         if not iid:
             self.preview.withdraw()
@@ -458,6 +511,15 @@ class App:
         y = self.root.winfo_pointery() + 14
         self.preview.geometry("+%d+%d" % (x, y))
         self.preview.deiconify()
+
+    def _on_tree_menu(self, event):
+        iid = self.tree.identify_row(event.y)
+        if iid:
+            self.tree.selection_set(iid)
+            try:
+                self.tree_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                self.tree_menu.grab_release()
 
     def _set_text(self, widget, text):
         widget.configure(state="normal")
@@ -481,7 +543,6 @@ class App:
             self.match_info.set("")
             self.txt_view.configure(state="disabled")
             return
-        # ищем каждое слово (регистр не учитываем)
         n = 0
         for w in words:
             pos = self.txt_view.search(w, start, stopindex="end", nocase=True)
@@ -492,7 +553,8 @@ class App:
                 n += 1
                 pos = self.txt_view.search(w, end, stopindex="end", nocase=True)
         self.txt_view.configure(state="disabled")
-        self.match_info.set("совпадений в TXT: %d (Alt+→ для навигации)" % n if n else "совпадений в TXT нет")
+        self.match_info.set("совпадений в TXT: %d (кнопки ◀ ▶ для навигации)" % n if n
+                            else "совпадений в TXT нет")
         if n:
             self._show_match(0)
 
@@ -529,12 +591,11 @@ class App:
         self._highlight_hits(self.search_highlight)
 
     def _show_txt_tab(self):
-        self.nb.select(0)
+        self.nb.select("Текст чата (TXT)")
 
     # ---------------- описания ----------------
     def _desc_of(self, ch, mode):
         section = ch.get("desc_" + mode) or "(Описание появится после выгрузки чата.)"
-        # отделяем статистический заголовок от тела
         parts = section.split("\n\n", 1)
         return parts[1] if len(parts) == 2 else section
 
@@ -555,9 +616,7 @@ class App:
         self.root.clipboard_append(self._desc_of(ch, self.mode_var.get()))
         self._status("Описание скопировано в буфер обмена.", "ok")
 
-    # ---------------- заметки / избранное / удаление (с автосохранением п.7) ----------------
-    _NOTE_DIRTY = False
-
+    # ---------------- заметки / избранное / удаление (п.7) ----------------
     def _on_notes_modified(self, _e=None):
         self._NOTE_DIRTY = True
         self.notes.edit_modified(False)
@@ -670,10 +729,9 @@ class App:
         for a, b, sim in pairs:
             tv.insert("", "end", values=(a.get("title") or "", b.get("title") or "", sim))
         tv.pack(fill="both", expand=True, padx=8, pady=8)
-        if not pairs:
-            tk.Label(win, text="Дубликатов и похожих чатов не найдено.", bg="#222", fg="#fff").pack()
-        else:
-            tk.Label(win, text="Найдено пар: %d" % len(pairs), bg="#222", fg="#fff").pack()
+        msg = ("Найдено пар: %d" % len(pairs)) if pairs else \
+            "Дубликатов и похожих чатов не найдено."
+        tk.Label(win, text=msg).pack()
 
     # ---------------- поиск ----------------
     def on_search(self):
@@ -701,7 +759,6 @@ class App:
         if not chats:
             return
         self._status("🧠 Семантический поиск по %d чатам…" % len(chats), "work")
-        # обновляем индексы в потоке, чтобы UI не замер
         threading.Thread(target=self._semantic_worker, args=(q, chats), daemon=True).start()
 
     def _semantic_worker(self, q, chats):
@@ -710,10 +767,7 @@ class App:
         except Exception as e:
             self.q.put(("status", ("Ошибка семантики: %s" % e, "err")))
             return
-        # переводим в общий формат
-        as_common = []
-        for ch, score, snippet, _ in results:
-            as_common.append((ch, score, snippet, "семантика"))
+        as_common = [(ch, score, snippet, "семантика") for ch, score, snippet, _ in results]
         self.q.put(("semantic", (q, as_common)))
 
     def _render_search_results(self, results, info_text):
@@ -756,9 +810,9 @@ class App:
             self.prom_tree.insert("", "end", iid=str(p["id"]), values=vals)
 
     def _save_current_as_prompt(self):
-        text = self.prompt_q.get("1.0", "end") if False else self.prompt_q.get().strip()
+        text = self.prompt_q.get().strip()
         if not text:
-            messagebox.showinfo("Мои промпты", "Введите текст промпта в поле поиска/текста.")
+            messagebox.showinfo("Мои промпты", "Введите текст промпта в поле.")
             return
         cid = self._sel() or ""
         promptsm.add_prompt(text, chat_id=cid, tags="")
@@ -878,9 +932,8 @@ class App:
         self.root.after(200, self._drain_queue)
 
     def _set_light(self, state):
-        color = {"idle": "#9a9a9a", "work": "#e6b800", "ok": "#35b23a", "err": "#d64545"}.get(state, "#9a9a9a")
         try:
-            self.light.configure(bg=color)
+            self.light.set_state(state)
         except Exception:
             pass
 
@@ -890,6 +943,8 @@ class App:
             self._set_light("work")
         elif level == "ok":
             self._set_light("ok")
+        elif level == "err":
+            self._set_light("err")
 
     def _save_settings(self):
         self.settings.update({
@@ -901,17 +956,16 @@ class App:
         save_settings(self.settings)
         self._status("Настройки сохранены.", "ok")
 
-    def _change_theme(self):
-        self._save_settings()
-        self.colors = thememod.apply_theme(self.root, self.theme_var.get())
-        self._apply_row_tags()
-        self._status("Тема «%s» применена. Полностью перекрасится после перезапуска." % self.theme_var.get(), "ok")
-
     def _on_close(self):
         try:
             self.save_notes()
         except Exception:
             pass
+        if self.preview is not None:
+            try:
+                self.preview.destroy()
+            except Exception:
+                pass
         self.root.destroy()
 
 
@@ -944,7 +998,6 @@ def seed_demo():
         db.upsert_chat(cid, data["url"], title, day, txt_path, descs, "offline")
     db.set_favorite("demo-bbbb-2222", True)
     db.update_notes("demo-aaaa-1111", "ВАЖНО: это первый чат про архиватор.\nЗдесь обсуждали Selenium, статусы и офлайн-описания.")
-    # демо-промпты
     promptsm.add_prompt("Как выгрузить чаты Genspark в txt?", "demo-aaaa-1111", "")
     promptsm.add_prompt("Почему падает ChromeDriver session not created?", "demo-bbbb-2222", "")
     promptsm.add_prompt("Хочу интерфейс с кубиками и зелёными статусами", "demo-cccc-3333", "")

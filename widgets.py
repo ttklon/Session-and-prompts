@@ -1,115 +1,175 @@
 # -*- coding: utf-8 -*-
-"""Кастомные виджеты Minecraft-стиля для Genspark Arkhivator.
+"""Кастомные пиксельные виджеты Minecraft-стиля (только stdlib Tk, без PIL).
 
-Все виджеты рисуются на tk.Canvas (без внешних библиотек) и попиксельно
-воспроизводят эталонный скриншот reference_screenshot.png:
+Виджеты:
+  MCFrame       — зелёная «кирпичная» рамка + пергаментная панель, .body — внутренний контейнер.
+  MCButton      — объёмная кнопка (kind='green'/'wood'), блик сверху, тень снизу, заклёпки.
+  MCEntry       — утопленное поле ввода на пергаменте, .var/.entry доступны.
+  MCStatusLight — пиксельный квадрат-лампочка (idle/work/ok/err) с глифом.
+  MCCheckbox    — пиксельный квадрат с галочкой, поддерживает tk.BooleanVar.
+  MCTabs        — вкладки-язычки (активная зелёная, неактивные деревянные), .tabs — dict страниц.
 
-  • MCButton    — объёмная кнопка (зелёная / деревянная) с верхним бликом,
-                  тёмным торцом, чёрной обводкой и hover-эффектом.
-  • MCFrame     — пергаментная панель в зелёной кирпичной рамке с заклёпками
-                  по углам (4 «пиксельных блока» 4×4 px).
-  • MCEntry     — утопленное поле ввода с внутренней тенью и заголовком.
-  • MCStatusLight — квадратный пиксельный индикатор с галочкой/часами (idle/work/ok/err).
-  • MCCheckbox  — зелёный пиксельный квадрат с галочкой.
-  • MCTabs      — вкладки-язычки (активная зелёная, неактивные деревянные).
-
-Виджеты самодостаточны: они не ломают логику ttk/Tk, а дополняют её,
-давая визуал референса без замены работающего кода.
+Вся палитра управляется set_theme(theme_dict, minecraft=True/False): для современных
+тем (Светлая/Тёмная) рисуются плоские панели без блоков — тот же API.
 """
-import os
 import tkinter as tk
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Цветовые константы (pixel-art Minecraft-стиль)
-# ─────────────────────────────────────────────────────────────────────────────
-_BORDER_DARK = "#3c2d1d"   # чёрная обводка
-_BORDER_MID  = "#5a4a30"   # дополнительная обводка
-_GREEN_BASE  = "#417a22"   # основной зелёный (верх блика)
-_GREEN_HI    = "#5e9c32"   # светлый верхний блик
-_GREEN_LO    = "#2d5916"   # тёмный нижний торец
-_WOOD_BASE   = "#bd9354"   # дерево
-_WOOD_HI     = "#d6bf8f"
-_WOOD_LO     = "#7a5f30"
-_RIVET_HI    = "#a8966b"
-_RIVET_MID   = "#756c5a"
-_RIVET_LO    = "#3c2d1d"
+# ──────────────────────────── палитра (дефолт = Майнкрафт) ────────────────────────────
+_T = {
+    "tile_hi": "#5c8a3d", "tile_mid": "#2f5e1e", "tile_lo": "#1f4a16", "tile_gap": "#162e0c",
+    "panel": "#ebd3aa", "panel_dark": "#d6bf8f", "panel_light": "#f3e0b8",
+    "border_dark": "#3c2d1d", "border_mid": "#756c5a", "border_light": "#a8966b",
+    "accent": "#417a22", "accent_light": "#5e9c32", "accent_dark": "#2d5916",
+    "wood": "#bd9354", "wood_light": "#d6bf8f", "wood_dark": "#7a5f30",
+    "entry_bg": "#fdf6e0", "fg": "#1a1a1a",
+    "ok": "#35b23a", "warn": "#e6b800", "err": "#d64545", "silver": "#9a9a9a",
+    "font": ("Segoe UI", 10, "bold"),
+}
+_MC = True  # True → пиксельные блоки/заклёпки; False → плоский современный вид
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Утилиты отрисовки
-# ─────────────────────────────────────────────────────────────────────────────
-def _pixel_rect(canvas, x, y, w, h, color, outline=None, width=1):
-    return canvas.create_rectangle(x, y, x + w, y + h, fill=color,
-                                    outline=outline or "", width=width)
+def set_theme(t, minecraft=True):
+    """Применить словарь темы из theme.py ко всем новым виджетам."""
+    global _MC
+    _MC = bool(minecraft)
+    if minecraft:
+        for k in ("tile_hi", "tile_mid", "tile_lo", "tile_gap"):
+            _T[k] = {"tile_hi": t.get("bg_block_high", "#5c8a3d"),
+                     "tile_mid": t.get("bg_block_mid", "#2f5e1e"),
+                     "tile_lo": t.get("bg_block_dark", "#1f4a16"),
+                     "tile_gap": t.get("bg_tile_gap", "#162e0c")}[k]
+    else:
+        flat = t.get("bg", "#f3f3f3")
+        _T["tile_hi"] = _T["tile_mid"] = _T["tile_lo"] = _T["tile_gap"] = flat
+    _T["panel"] = t.get("panel", "#ebd3aa")
+    _T["panel_dark"] = t.get("panel_dark", "#d6bf8f")
+    _T["panel_light"] = t.get("panel_light", "#f3e0b8")
+    _T["border_dark"] = t.get("border_color", "#3c2d1d")
+    _T["border_mid"] = t.get("border_mid", "#756c5a")
+    _T["border_light"] = t.get("border_light", "#a8966b")
+    _T["accent"] = t.get("accent", "#417a22")
+    _T["accent_light"] = t.get("accent_light", "#5e9c32")
+    _T["accent_dark"] = t.get("accent_dark", "#2d5916")
+    _T["wood"] = t.get("wood", "#bd9354")
+    _T["wood_light"] = t.get("wood_light", "#d6bf8f")
+    _T["wood_dark"] = t.get("wood_dark", "#7a5f30")
+    _T["entry_bg"] = t.get("entry_bg", "#fdf6e0")
+    _T["fg"] = t.get("fg", "#1a1a1a")
+    _T["ok"] = t.get("ok", "#35b23a")
+    _T["warn"] = t.get("warn", "#e6b800")
+    _T["err"] = t.get("err", "#d64545")
+    _T["silver"] = t.get("silver", "#9a9a9a")
+    _T["font"] = t.get("mc_font") if minecraft and t.get("mc_font") else t.get("font", ("Segoe UI", 10, "bold"))
 
 
-def _draw_rivet(canvas, x, y, size=4, dark=False):
-    """Заклёпка 4×4 px: верхний светлый, нижний тёмный — псевдо-3D."""
-    light = _RIVET_HI if not dark else _RIVET_MID
-    _pixel_rect(canvas, x,         y,         size,     size,     light)
-    _pixel_rect(canvas, x + size,  y,         size,     size,     _RIVET_MID)
-    _pixel_rect(canvas, x,         y + size,  size,     size,     _RIVET_MID)
-    _pixel_rect(canvas, x + size,  y + size,  size,     size,     _RIVET_LO)
+def palette():
+    return dict(_T)
 
 
-def _draw_frame_border(canvas, x, y, w, h, thickness=2):
-    """Зелёная «кирпичная» рамка по периметру (как блоки травы)."""
-    # Внутренняя заливка — пергамент по умолчанию (или внешний bg)
-    _pixel_rect(canvas, x, y, w, h, fill="", outline=_BORDER_DARK, width=1)
-
-    # Верхний левый угол — рисуем «блоки» 4×4
-    step = 4
-    for bx in range(x, x + w, step * 2):
-        for by in range(y, min(y + step * 2, y + thickness * 2), step):
-            color = _GREEN_HI if (by // step) % 2 == 0 else _GREEN_BASE
-            _pixel_rect(canvas, bx, by, step, step, color)
+# ──────────────────────────── низкоуровневые примитивы ────────────────────────────
+def _px(c, x, y, w, h, color, outline="", width=1):
+    return c.create_rectangle(x, y, x + w, y + h, fill=color, outline=outline, width=width)
 
 
-def _fill_bg_blocks(canvas, x, y, w, h, step=8):
-    """Заливка фона пиксельными блоками (зелёная «трава/хвоя»)."""
-    for bx in range(x, x + w, step):
-        for by in range(y, y + h, step):
-            # Делаем квадратики 1px зазора → эффект решётки
-            c1 = _GREEN_HI if ((bx // step + by // step) % 4 == 0) else _GREEN_BASE
-            c2 = _GREEN_LO if ((bx // step + by // step) % 4 == 1) else c1
-            _pixel_rect(canvas, bx,           by,           step - 1, step - 1, c2)
-            _pixel_rect(canvas, bx + step - 1, by,           1,         step - 1, _BORDER_DARK)
-            _pixel_rect(canvas, bx,           by + step - 1, step,      1,        _BORDER_DARK)
+def _rivet(c, x, y, s=2):
+    _px(c, x, y, s, s, _T["border_light"])
+    _px(c, x + s, y, s, s, _T["border_mid"])
+    _px(c, x, y + s, s, s, _T["border_mid"])
+    _px(c, x + s, y + s, s, s, _T["border_dark"])
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# MCButton — объёмная кнопка
-# ─────────────────────────────────────────────────────────────────────────────
+def _tiles(c, w, h, step=8):
+    """Заливка зелёными пиксельными блоками с тёмными зазорами."""
+    _px(c, 0, 0, w, h, _T["tile_gap"])
+    for bx in range(0, w, step):
+        for by in range(0, h, step):
+            pick = (bx // step + by // step) % 4
+            col = _T["tile_hi"] if pick == 0 else (_T["tile_lo"] if pick == 1 else _T["tile_mid"])
+            _px(c, bx, by, step - 1, step - 1, col)
+
+
+# ──────────────────────────── MCFrame ────────────────────────────
+class MCFrame(tk.Frame):
+    """Рамка с пиксельной «кирпичной» каймой и пергаментной панелью.
+    Виджеты кладутся в .body."""
+
+    def __init__(self, parent, parchment=True, pad=6, **kw):
+        super().__init__(parent, bd=0, highlightthickness=0, bg=_T["tile_mid"], **kw)
+        self.parchment = parchment
+        self.pad = pad
+        self.canvas = tk.Canvas(self, bd=0, highlightthickness=0, bg=_T["tile_mid"])
+        self.canvas.pack(fill="both", expand=True)
+        self.body = tk.Frame(self.canvas, bg=_T["panel"], bd=0, highlightthickness=0)
+        self._win = self.canvas.create_window(0, 0, window=self.body, anchor="nw", width=1, height=1)
+        self._size = (0, 0)
+        self.canvas.bind("<Configure>", self._redraw)
+
+    def _redraw(self, _e=None):
+        c = self.canvas
+        w = max(2, c.winfo_width())
+        h = max(2, c.winfo_height())
+        if (w, h) == self._size:
+            return
+        self._size = (w, h)
+        c.delete("bg")
+        if _MC:
+            _tiles(c, w, h)
+            for item in c.find_all():
+                c.addtag_below("bg", item)
+        else:
+            r = _px(c, 0, 0, w, h, _T["tile_mid"])
+            c.addtag_below("bg", r)
+        pad = self.pad
+        ix, iy, iw, ih = pad, pad, w - pad * 2, h - pad * 2
+        if iw < 8 or ih < 8:
+            return
+        items = []
+        if self.parchment:
+            items.append(_px(c, ix + 2, iy + 2, iw, ih, "#9c8455"))            # тень
+            items.append(_px(c, ix, iy, iw, ih, _T["panel"]))                  # пергамент
+            bh1 = max(2, ih // 12)
+            items.append(_px(c, ix, iy, iw, bh1, _T["panel_light"]))           # верхний блик
+            items.append(_px(c, ix, iy + ih - bh1, iw, bh1, _T["panel_dark"])) # нижняя тень
+            items.append(_px(c, ix, iy, iw, ih, "", _T["border_dark"], 2))     # чёрная рамка
+            if _MC:
+                items.append(_px(c, ix + 3, iy + 3, iw - 6, ih - 6, "", _T["border_light"], 1))
+        for it in items:
+            c.addtag_below("bg", it)
+        if _MC:
+            for (rx, ry) in [(2, 2), (max(2, w - 10), 2), (2, max(2, h - 10)), (max(2, w - 10), max(2, h - 10))]:
+                for dx in (0, 2):
+                    for dy in (0, 2):
+                        pass
+                _rivet(c, rx, ry, 2)
+                for it in c.find_withtag("current"):
+                    c.addtag_above("bg", it)
+        # тело панели
+        c.coords(self._win, ix + 3, iy + 3)
+        c.itemconfigure(self._win, width=max(1, iw - 6), height=max(1, ih - 6))
+        c.tag_raise(self._win)
+
+
+# ──────────────────────────── MCButton ────────────────────────────
 class MCButton(tk.Frame):
-    """Объёмная кнопка Minecraft-стиля. Цвет: 'green' (по умолчанию) или 'wood'."""
-
-    def __init__(self, parent, text="Button", command=None,
-                 kind="green", width=None, height=32, font=None, **kwargs):
-        # Цвета рамки у фрейма — оставляем прозрачной, всё рисуем в canvas
-        super().__init__(parent, bd=0, highlightthickness=0, **kwargs)
+    def __init__(self, parent, text="Button", command=None, kind="green",
+                 height=32, width=None, font=None, **kw):
+        super().__init__(parent, bd=0, highlightthickness=0, bg=_T["panel"], **kw)
         self.command = command
         self.kind = kind
         self._text = text
         self._disabled = False
-        self.font = font or ("Segoe UI", 10, "bold")
-
-        self.canvas = tk.Canvas(self, bd=0, highlightthickness=0, height=height, cursor="hand2")
+        self._hover_id = None
+        self.font = font or _T["font"]
+        self.canvas = tk.Canvas(self, bd=0, highlightthickness=0, height=height,
+                                bg=_T["panel"], cursor="hand2")
         self.canvas.pack(fill="both", expand=True)
-
-        # Подгоняем высоту по желаемому размеру
         if width:
             self.canvas.configure(width=width)
-        # Привязка событий
-        self.canvas.bind("<Configure>", self._on_resize)
-        self.canvas.bind("<Button-1>", self._on_click)
-        self.canvas.bind("<Enter>", self._on_hover)
-        self.canvas.bind("<Leave>", self._on_leave)
-        # Прокидываем привязки на сам фрейм (на случай клика по фрейм-контейнеру)
-        self.bind("<Enter>", self._on_hover)
-        self.bind("<Leave>", self._on_leave)
+        self.canvas.bind("<Configure>", lambda e: self._redraw())
+        self.canvas.bind("<ButtonRelease-1>", self._click)
+        self.canvas.bind("<Enter>", self._hover_on)
+        self.canvas.bind("<Leave>", self._hover_off)
 
-    # ── публичные API ──
     def configure(self, cnf=None, **kw):
         if "text" in kw:
             self._text = kw.pop("text")
@@ -119,487 +179,298 @@ class MCButton(tk.Frame):
         if "state" in kw:
             self._disabled = (kw.pop("state") == "disabled")
             self._redraw()
-        super().configure(cnf, **kw)
+        return super().configure(cnf, **kw)
 
-    def config(self, cnf=None, **kw):  # alias
-        return self.configure(cnf, **kw)
+    config = configure
 
-    # ── внутренние ──
-    def _on_resize(self, _e=None):
+    def _colors(self):
+        if self._disabled:
+            return "#8a8a8a", "#6e6e6e", "#3a3a3a", "#dcdcdc"
+        if self.kind == "wood":
+            return _T["wood_light"], _T["wood"], _T["wood_dark"], "#1a1a1a"
+        return _T["accent_light"], _T["accent"], _T["accent_dark"], "#ffffff"
+
+    def _redraw(self):
+        c = self.canvas
+        c.delete("all")
+        w = max(4, c.winfo_width())
+        h = max(4, c.winfo_height())
+        hi, base, lo, txt = self._colors()
+        hi_h = max(2, h // 4)
+        lo_h = max(2, h // 4)
+        _px(c, 0, 0, w, hi_h, hi)
+        _px(c, 0, hi_h, w, h - hi_h - lo_h, base)
+        _px(c, 0, h - lo_h, w, lo_h, lo)
+        _px(c, 0, 0, 1, h, _T["border_dark"])
+        _px(c, w - 1, 0, 1, h, _T["border_dark"])
+        _px(c, 0, 0, w, h, "", _T["border_dark"], 1)
+        if _MC and w >= 24 and h >= 14:
+            for (rx, ry) in [(3, 3), (w - 7, 3), (3, h - 7), (w - 7, h - 7)]:
+                _rivet(c, rx, ry, 2)
+        c.create_text(w // 2, h // 2, text=self._text, fill=txt, font=self.font)
+
+    def _click(self, _e=None):
+        if not self._disabled and self.command:
+            self.command()
+
+    def _hover_on(self, _e=None):
+        if self._disabled:
+            return
+        w = max(4, self.canvas.winfo_width())
+        h = max(4, self.canvas.winfo_height())
+        if self._hover_id is None:
+            self._hover_id = self.canvas.create_rectangle(0, 0, w, h, fill="#ffffff",
+                                                          stipple="gray25", outline="")
+
+    def _hover_off(self, _e=None):
+        if self._hover_id is not None:
+            self.canvas.delete(self._hover_id)
+            self._hover_id = None
+
+
+# ──────────────────────────── MCEntry ────────────────────────────
+class MCEntry(tk.Frame):
+    def __init__(self, parent, textvariable=None, show=None, width=None, height=30, **kw):
+        super().__init__(parent, bd=0, highlightthickness=0, bg=_T["panel"], **kw)
+        self.var = textvariable or tk.StringVar()
+        self.canvas = tk.Canvas(self, bd=0, highlightthickness=0, height=height, bg=_T["panel"])
+        self.canvas.pack(fill="both", expand=True)
+        if width:
+            self.canvas.configure(width=width)
+        self.entry = tk.Entry(self.canvas, textvariable=self.var, bg=_T["entry_bg"],
+                              fg=_T["fg"], insertbackground=_T["fg"], relief="flat",
+                              bd=0, highlightthickness=0, font=_T["font"])
+        if show:
+            self.entry.config(show=show)
+        self._win = self.canvas.create_window(0, 0, window=self.entry, anchor="nw",
+                                              width=1, height=1)
+        self.canvas.bind("<Configure>", self._redraw)
+
+    def _redraw(self, _e=None):
+        c = self.canvas
+        c.delete("bg")
+        w = max(4, c.winfo_width())
+        h = max(4, c.winfo_height())
+        items = []
+        if _MC:
+            items.append(_px(c, 0, 0, w, h, _T["accent_dark"]))
+            items.append(_px(c, 3, 3, w - 4, h - 4, _T["border_dark"]))
+            items.append(_px(c, 2, 2, w - 4, h - 4, _T["entry_bg"]))
+        else:
+            items.append(_px(c, 0, 0, w, h, _T["entry_bg"], _T["border_dark"], 1))
+        for it in items:
+            c.addtag_below("bg", it)
+        m = 3 if _MC else 2
+        c.coords(self._win, m + 3, m + 1)
+        c.itemconfigure(self._win, width=max(1, w - (m + 3) * 2),
+                        height=max(1, h - (m + 1) * 2 - 2))
+        c.tag_raise(self._win)
+
+    def get(self):
+        return self.var.get()
+
+    def set(self, v):
+        self.var.set(v)
+
+    def delete(self, first, last=None):
+        self.entry.delete(first, last)
+
+    def insert(self, index, s):
+        self.entry.insert(index, s)
+
+    def bind(self, seq=None, func=None, add=None):
+        return self.entry.bind(seq, func, add)
+
+    def focus_set(self):
+        self.entry.focus_set()
+
+    def focus_force(self):
+        self.entry.focus_force()
+
+
+# ──────────────────────────── MCStatusLight ────────────────────────────
+class MCStatusLight(tk.Frame):
+    _STATES = {"idle": "silver", "work": "warn", "ok": "ok", "err": "err"}
+
+    def __init__(self, parent, size=22, **kw):
+        super().__init__(parent, bd=0, highlightthickness=0, bg=_T["panel"], **kw)
+        self.size = size
+        self.state = "idle"
+        self.canvas = tk.Canvas(self, width=size, height=size, bd=0,
+                                highlightthickness=0, bg=_T["panel"])
+        self.canvas.pack()
+        self.canvas.bind("<Configure>", lambda e: self._redraw())
+        self.after(80, self._redraw)
+
+    def set_state(self, s):
+        self.state = s
         self._redraw()
 
     def _redraw(self):
         c = self.canvas
         c.delete("all")
-        w = max(1, c.winfo_width() or 1)
-        h = max(1, c.winfo_height() or 1)
-        if w < 4 or h < 4:
-            return
-
-        # Цветовая схема
-        if self.kind == "wood":
-            hi, base, lo, txt = _WOOD_HI, _WOOD_BASE, _WOOD_LO, "#1a1a1a"
-        else:
-            hi, base, lo, txt = _GREEN_HI, _GREEN_BASE, _GREEN_LO, "#ffffff"
-
-        if self._disabled:
-            base = "#6e6e6e"
-            hi = "#8a8a8a"
-            lo = "#3a3a3a"
-
-        # Объёмные грани: верхний светлый блик, основной цвет, нижний тёмный торец
-        hi_h = max(2, h // 4)
-        lo_h = max(2, h // 4)
-
-        # Светлый верх
-        _pixel_rect(c, 0, 0, w, hi_h, hi)
-        # Основное тело
-        _pixel_rect(c, 0, hi_h, w, h - hi_h - lo_h, base)
-        # Тёмный низ
-        _pixel_rect(c, 0, h - lo_h, w, lo_h, lo)
-        # Боковые тёмные торцы (по 1px)
-        _pixel_rect(c, 0, 0, 1, h, _BORDER_DARK)
-        _pixel_rect(c, w - 1, 0, 1, h, _BORDER_DARK)
-        # Чёрная обводка
-        _pixel_rect(c, 0, 0, w, h, outline=_BORDER_DARK, width=1)
-
-        # Заклёпки по углам (2×2 px)
-        rivet = 2
-        for (rx, ry) in [(2, 2), (w - 6, 2), (2, h - 6), (w - 6, h - 6)]:
-            _draw_rivet(c, rx, ry, size=rivet)
-
-        # Текст
-        font = tuple(self.font)
-        c.create_text(w // 2, h // 2, text=self._text, fill=txt, font=font)
-
-    def _on_click(self, _e=None):
-        if self._disabled:
-            return
-        if self.command:
-            try:
-                self.command()
-            except Exception:
-                pass
-
-    def _on_hover(self, _e=None):
-        if self._disabled:
-            return
-        self.canvas.configure(cursor="hand2")
-        # Лёгкая подсветка — рисуем поверх прозрачный белый rect
-        w = self.canvas.winfo_width()
-        h = self.canvas.winfo_height()
-        if w < 4 or h < 4:
-            return
-        if not hasattr(self, "_hover"):
-            self._hover = self.canvas.create_rectangle(
-                0, 0, w, h, fill="#ffffff", stipple="gray25", outline=""
-            )
-        else:
-            self.canvas.coords(self._hover, 0, 0, w, h)
-
-    def _on_leave(self, _e=None):
-        if hasattr(self, "_hover"):
-            self.canvas.delete(self._hover)
-            del self._hover
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MCFrame — пергаментная панель в зелёной кирпичной рамке
-# ─────────────────────────────────────────────────────────────────────────────
-class MCFrame(tk.Frame):
-    """Контейнер с двумя слоями:
-        1) фон — пиксельные зелёные блоки («траву/кирпич»);
-        2) внутренняя пергаментная панель с приподнятыми краями."""
-
-    def __init__(self, parent, parchment=True, padding=4, **kwargs):
-        # bg = цвет фона «кирпичной» рамки
-        super().__init__(parent, bd=0, highlightthickness=0,
-                         bg=_GREEN_BASE, **kwargs)
-
-        self.parchment = parchment
-        self.padding = padding
-        self._canvas = tk.Canvas(self, bd=0, highlightthickness=0, bg=_GREEN_BASE)
-        self._canvas.pack(fill="both", expand=True)
-        self._inner = None
-        self._last_size = (0, 0)
-        self._canvas.bind("<Configure>", self._on_resize)
-
-    def _on_resize(self, _e=None):
-        c = self._canvas
-        w = max(1, c.winfo_width())
-        h = max(1, c.winfo_height())
-        if (w, h) == self._last_size:
-            return
-        self._last_size = (w, h)
-        c.delete("all")
-
-        # 1) Заливка фона пиксельной «травой»
-        _fill_bg_blocks(c, 0, 0, w, h, step=8)
-
-        # 2) Заклёпки по углам внешней рамки (4×4 each)
-        rivet = 4
-        for (rx, ry) in [(4, 4), (w - 12, 4), (4, h - 12), (w - 12, h - 12)]:
-            _draw_rivet(c, rx, ry, size=rivet)
-
-        pad = self.padding
-        if w < pad * 2 + 4 or h < pad * 2 + 4:
-            return
-
-        # 3) Внутренняя пергаментная панель — прямоугольник с двойной обводкой
-        ix, iy, iw, ih = pad, pad, w - pad * 2, h - pad * 2
-        if self.parchment:
-            # Тень под пергаментом
-            _pixel_rect(c, ix + 2, iy + 2, iw, ih, "#9c8455")
-            # Сам пергамент
-            _pixel_rect(c, ix, iy, iw, ih, "#ebd3aa")
-            # Верх/низ блик
-            bh1 = max(1, ih // 10)
-            _pixel_rect(c, ix, iy,      iw, bh1, "#f3e0b8")
-            bh2 = max(1, ih // 14)
-            _pixel_rect(c, ix, iy + ih - bh2, iw, bh2, "#d6bf8f")
-            # Чёрная рамка пергамента
-            _pixel_rect(c, ix, iy, iw, ih, outline=_BORDER_DARK, width=2)
-            # Внутренняя тонкая (золотая) окантовка
-            _pixel_rect(c, ix + 3, iy + 3, iw - 6, ih - 6, outline=_RIVET_HI, width=1)
-        else:
-            _pixel_rect(c, ix, iy, iw, ih, _GREEN_BASE)
-            _pixel_rect(c, ix, iy, iw, ih, outline=_BORDER_DARK, width=1)
-
-        # 4) Сам «внутренний» фрейм — в нём размещают реальные виджеты
-        if self._inner is None:
-            self._inner = tk.Frame(self._canvas, bg="#ebd3aa" if self.parchment else _GREEN_BASE,
-                                   bd=0, highlightthickness=0)
-            self._win_id = self._canvas.create_window(
-                ix + 4, iy + 4, window=self._inner,
-                width=max(1, iw - 8), height=max(1, ih - 8),
-                anchor="nw"
-            )
-        else:
-            self._canvas.coords(self._win_id, ix + 4, iy + 4)
-            self._canvas.itemconfigure(self._win_id, width=max(1, iw - 8),
-                                       height=max(1, ih - 8))
-
-    # Проксируем add/add_child на внутренний фрейм
-    def add(self, widget, **kw):
-        if self._inner is None:
-            self._on_resize()
-        self._inner.pack(**kw)
-
-    # tk.Frame-like API: пара прокси-методов
-    def winfo_children(self):
-        if self._inner:
-            return self._inner.winfo_children()
-        return []
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MCEntry — поле ввода (утопленное) с лейблом-слева (опционально)
-# ─────────────────────────────────────────────────────────────────────────────
-class MCEntry(tk.Frame):
-    """Поле ввода в Minecraft-стиле: пергаментная подложка, чёрная
-    обводка, внутренняя тонкая золотая окантовка."""
-
-    def __init__(self, parent, label=None, show=None, **kwargs):
-        super().__init__(parent, bd=0, highlightthickness=0, bg=_GREEN_BASE, **kwargs)
-        self._label_text = label
-        self._show = show
-
-        self._canvas = tk.Canvas(self, bd=0, highlightthickness=0,
-                                 bg=_GREEN_BASE, height=28)
-        self._canvas.pack(fill="x", expand=False)
-        self._canvas.bind("<Configure>", self._redraw)
-
-        # Сам Entry — tk.Entry, встраиваем в канвас
-        self._var = tk.StringVar()
-        self._entry = tk.Entry(self._canvas, textvariable=self._var,
-                               bg="#fdf6e0", fg="#1a1a1a",
-                               relief="flat", bd=0,
-                               highlightthickness=0,
-                               font=("Segoe UI", 10, "bold"),
-                               insertbackground="#1a1a1a")
-        if show:
-            self._entry.config(show=show)
-
-    def _redraw(self, _e=None):
-        c = self._canvas
-        c.delete("all")
-        w = max(2, c.winfo_width())
-        h = max(2, c.winfo_height())
-
-        # Зелёная подложка-«земля»
-        _pixel_rect(c, 0, 0, w, h, _GREEN_BASE)
-        # Утопленный пергамент
-        ix, iy, iw, ih = 2, 2, w - 4, h - 4
-        _pixel_rect(c, ix + 1, iy + 1, iw, ih, _BORDER_DARK)   # тень
-        _pixel_rect(c, ix, iy, iw, ih, "#fdf6e0")               # пергамент
-        _pixel_rect(c, ix, iy, iw, ih, outline=_BORDER_DARK, width=1)
-
-        # Размещаем виджет Entry
-        if not hasattr(self, "_win_id"):
-            self._win_id = c.create_window(
-                ix + 4, iy + 2, window=self._entry,
-                width=max(1, iw - 8), height=max(1, ih - 4),
-                anchor="nw"
-            )
-        else:
-            c.coords(self._win_id, ix + 4, iy + 2)
-            c.itemconfigure(self._win_id, width=max(1, iw - 8),
-                            height=max(1, ih - 4))
-
-    # Проксируем StringVar-методы
-    def get(self):
-        return self._var.get()
-
-    def set(self, v):
-        self._var.set(v)
-
-    def delete(self, first, last=None):
-        self._entry.delete(first, last)
-
-    def insert(self, index, s):
-        self._entry.insert(index, s)
-
-    def focus_set(self):
-        self._entry.focus_set()
-
-    def focus_force(self):
-        self._entry.focus_force()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MCStatusLight — пиксельный индикатор статуса
-# ─────────────────────────────────────────────────────────────────────────────
-class MCStatusLight(tk.Frame):
-    """Квадратный пиксельный индикатор 16×16 с галочкой / часами / крестиком.
-
-    Состояния:
-        idle  — серый, вертикальные линии
-        work  — жёлтый, «часы» (две стрелки)
-        ok    — зелёный, галочка ✓
-        err   — красный, крестик ✗"""
-
-    _COLORS = {
-        "idle": ("#9a9a9a", "#5a5a5a", "#3a3a3a"),
-        "work": ("#e6b800", "#a8800f", "#5e4a05"),
-        "ok":   ("#35b23a", "#1d7a22", "#0e4a12"),
-        "err":  ("#d64545", "#8a2424", "#4a0c0c"),
-    }
-
-    def __init__(self, parent, size=20, **kwargs):
-        super().__init__(parent, bd=0, highlightthickness=0, bg=_GREEN_BASE, **kwargs)
-        self.size = size
-        self.state_val = "idle"
-        self.canvas = tk.Canvas(self, width=size, height=size, bd=0,
-                                highlightthickness=0, bg=_GREEN_BASE)
-        self.canvas.pack()
-        self.canvas.bind("<Configure>", self._redraw)
-
-    def set_state(self, s):
-        self.state_val = s
-        self._redraw()
-
-    def _redraw(self, _e=None):
-        c = self.canvas
-        c.delete("all")
         s = self.size
-        hi, mid, lo = self._COLORS.get(self.state_val, self._COLORS["idle"])
+        base = _T.get(self._STATES.get(self.state, "silver"), _T["silver"])
+        _px(c, 1, 1, s - 2, s - 2, base)
+        bh = max(2, s // 3)
+        _px(c, 1, 1, s - 2, bh, "#ffffff")
+        _px(c, 1, s - 1 - bh, s - 2, bh, "#000000")
+        # уменьшаем контраст блика/тени стипплингом невозможно — красим полупрозрачно не умеем,
+        # поэтому верх/низ перекрашиваем оттенками базового цвета
+        def shade(col, f):
+            col = col.lstrip("#")
+            r, g, b = (int(col[i:i + 2], 16) for i in (0, 2, 4))
+            r = max(0, min(255, int(r * f)))
+            g = max(0, min(255, int(g * f)))
+            b = max(0, min(255, int(b * f)))
+            return "#%02x%02x%02x" % (r, g, b)
+        _px(c, 1, 1, s - 2, bh, shade(base, 1.35))
+        _px(c, 1, s - 1 - bh, s - 2, bh, shade(base, 0.55))
+        _px(c, 0, 0, s, s, "", _T["border_dark"], 2)
+        cx, cy = s / 2, s / 2
+        if self.state == "ok":
+            c.create_line(s * 0.25, cy, s * 0.43, s * 0.68, fill="#ffffff", width=2)
+            c.create_line(s * 0.43, s * 0.68, s * 0.75, s * 0.30, fill="#ffffff", width=2)
+        elif self.state == "work":
+            c.create_line(cx, cy, cx, s * 0.28, fill="#ffffff", width=2)
+            c.create_line(cx, cy, s * 0.72, cy, fill="#ffffff", width=2)
+        elif self.state == "err":
+            c.create_line(s * 0.3, s * 0.3, s * 0.7, s * 0.7, fill="#ffffff", width=2)
+            c.create_line(s * 0.7, s * 0.3, s * 0.3, s * 0.7, fill="#ffffff", width=2)
 
-        # 1px зазор по краям для «рамки»
-        margin = 1
-        _pixel_rect(c, margin, margin, s - margin * 2, s - margin * 2, mid)
-        # Верхний блик
-        bh = max(1, (s - margin * 2) // 3)
-        _pixel_rect(c, margin, margin, s - margin * 2, bh, hi)
-        # Нижняя тень
-        _pixel_rect(c, margin, s - margin - bh, s - margin * 2, bh, lo)
-        # Контур
-        _pixel_rect(c, margin, margin, s - margin * 2, s - margin * 2,
-                    outline=_BORDER_DARK, width=1)
 
-        # Иконка внутри
-        if s >= 12 and self.state_val == "ok":
-            c.create_line(s * 0.30, s * 0.55, s * 0.45, s * 0.70,
-                          fill="#ffffff", width=2)
-            c.create_line(s * 0.45, s * 0.70, s * 0.72, s * 0.35,
-                          fill="#ffffff", width=2)
-        elif s >= 12 and self.state_val == "work":
-            c.create_line(s * 0.5, s * 0.5, s * 0.5, s * 0.25, fill="#ffffff", width=2)
-            c.create_line(s * 0.5, s * 0.5, s * 0.75, s * 0.5, fill="#ffffff", width=2)
-        elif s >= 12 and self.state_val == "err":
-            c.create_line(s * 0.30, s * 0.30, s * 0.70, s * 0.70,
-                          fill="#ffffff", width=2)
-            c.create_line(s * 0.70, s * 0.30, s * 0.30, s * 0.70,
-                          fill="#ffffff", width=2)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MCCheckbox — пиксельный квадрат с галочкой
-# ─────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────── MCCheckbox ────────────────────────────
 class MCCheckbox(tk.Frame):
-    def __init__(self, parent, text="", value=False, command=None, **kwargs):
-        super().__init__(parent, bd=0, highlightthickness=0, bg=_GREEN_BASE, **kwargs)
+    def __init__(self, parent, text="", variable=None, command=None, **kw):
+        super().__init__(parent, bd=0, highlightthickness=0, bg=_T["panel"], **kw)
         self._text = text
-        self._val = bool(value)
+        self.var = variable or tk.BooleanVar(value=False)
         self._cmd = command
-        self.canvas = tk.Canvas(self, height=22, bd=0, highlightthickness=0, bg=_GREEN_BASE)
-        self.canvas.pack(side="left", fill="y")
-        self.canvas.bind("<Configure>", self._redraw)
-        self.canvas.bind("<Button-1>", self._on_click)
-        self.bind("<Button-1>", self._on_click)
-        self.canvas.configure(cursor="hand2")
-        self._label_text = text
+        self.canvas = tk.Canvas(self, height=26, bd=0, highlightthickness=0,
+                                bg=_T["panel"], cursor="hand2")
+        self.canvas.pack(fill="x", expand=True)
+        self.canvas.bind("<Configure>", lambda e: self._redraw())
+        self.canvas.bind("<ButtonRelease-1>", self._toggle)
 
-    def _redraw(self, _e=None):
+    def _redraw(self):
         c = self.canvas
         c.delete("all")
-        w = max(40, c.winfo_height() * 4)
-        c.configure(width=w)
-        h = c.winfo_height() or 22
-        # Квадрат
-        box = h - 4
-        bx, by = 2, 2
-        if self._val:
-            _pixel_rect(c, bx, by, box, box, _GREEN_HI)
-            _pixel_rect(c, bx + 1, by + box - 2, box - 2, 2, _GREEN_LO)
-            # Галочка
-            c.create_line(bx + box * 0.20, by + box * 0.55,
-                          bx + box * 0.40, by + box * 0.72,
+        h = max(22, c.winfo_height())
+        box = min(20, h - 6)
+        bx, by = 3, (h - box) // 2
+        val = bool(self.var.get())
+        if val:
+            _px(c, bx, by, box, box, _T["accent"])
+            _px(c, bx, by, box, box // 3, _T["accent_light"])
+            c.create_line(bx + box * 0.2, by + box * 0.55, bx + box * 0.4, by + box * 0.75,
                           fill="#ffffff", width=2)
-            c.create_line(bx + box * 0.40, by + box * 0.72,
-                          bx + box * 0.78, by + box * 0.30,
+            c.create_line(bx + box * 0.4, by + box * 0.75, bx + box * 0.8, by + box * 0.25,
                           fill="#ffffff", width=2)
         else:
-            _pixel_rect(c, bx, by, box, box, "#cccccc")
-            _pixel_rect(c, bx + 1, by + box - 2, box - 2, 2, "#888888")
-        _pixel_rect(c, bx, by, box, box, outline=_BORDER_DARK, width=1)
-        # Текст
+            _px(c, bx, by, box, box, _T["entry_bg"])
+            _px(c, bx, by + box - box // 4, box, box // 4, _T["panel_dark"])
+        _px(c, bx, by, box, box, "", _T["border_dark"], 2)
         c.create_text(bx + box + 8, h / 2, text=self._text, anchor="w",
-                      font=("Segoe UI", 10, "bold"), fill="#ffffff")
+                      font=_T["font"], fill=_T["fg"])
 
-    def _on_click(self, _e=None):
-        self._val = not self._val
+    def _toggle(self, _e=None):
+        self.var.set(not bool(self.var.get()))
         self._redraw()
         if self._cmd:
-            try:
-                self._cmd(self._val)
-            except Exception:
-                pass
+            self._cmd()
 
     def get(self):
-        return self._val
+        return bool(self.var.get())
 
     def set(self, v):
-        self._val = bool(v)
+        self.var.set(bool(v))
         self._redraw()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# MCTabs — вкладки в Minecraft-стиле (язычки сверху)
-# ─────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────── MCTabs ────────────────────────────
 class MCTabs(tk.Frame):
-    """Горизонтальный ряд закладок-язычков сверху + контейнер страниц.
-    Каждая страница — обычный tk.Frame, доступ по tabs[title].
-    """
+    """Язычки сверху (активная — зелёная, остальные — деревянные) + страницы.
+    .tabs — dict title → tk.Frame контента; select(title) переключает."""
 
-    def __init__(self, parent, tabs=None, **kwargs):
-        super().__init__(parent, bd=0, highlightthickness=0, bg=_GREEN_BASE, **kwargs)
-        self.tabs_order = list(tabs or [])
-        self.tabs_frames = {t: tk.Frame(self, bg="#ebd3aa", bd=1,
-                                        highlightthickness=1,
-                                        highlightbackground=_BORDER_DARK)
-                            for t in self.tabs_order}
-        self._active = self.tabs_order[0] if self.tabs_order else None
-
-        # Рисуем панель язычков сверху
-        self._bar_canvas = tk.Canvas(self, height=30, bd=0, highlightthickness=0,
-                                     bg=_GREEN_BASE)
-        self._bar_canvas.pack(side="top", fill="x")
-        self._bar_canvas.bind("<Configure>", self._redraw_bar)
-
-        # Pack остальных страниц стопкой (виден только активный)
-        for t, frm in self.tabs_frames.items():
-            frm.pack(fill="both", expand=True)
-        self._show_active()
+    def __init__(self, parent, tabs=None, **kw):
+        super().__init__(parent, bd=0, highlightthickness=0, bg=_T["panel"], **kw)
+        self.order = list(tabs or [])
+        self.tabs = {}
+        self._active = None
+        self.bar = tk.Canvas(self, height=30, bd=0, highlightthickness=0, bg=_T["panel"])
+        self.bar.pack(side="top", fill="x")
+        self.bar.bind("<Configure>", lambda e: self._redraw_bar())
+        self.bar.bind("<ButtonRelease-1>", self._click)
+        self._page_holder = tk.Frame(self, bg=_T["panel"], bd=0, highlightthickness=0)
+        self._page_holder.pack(fill="both", expand=True)
+        for t in self.order:
+            self.add_tab(t)
 
     def add_tab(self, title):
-        if title in self.tabs_frames:
-            return self.tabs_frames[title]
-        frm = tk.Frame(self, bg="#ebd3aa", bd=1, highlightthickness=1,
-                       highlightbackground=_BORDER_DARK)
-        self.tabs_frames[title] = frm
-        self.tabs_order.append(title)
-        frm.pack(fill="both", expand=True)
+        if title not in self.tabs:
+            self.tabs[title] = tk.Frame(self._page_holder, bg=_T["panel"], bd=0,
+                                        highlightthickness=0)
+        if title not in self.order:
+            self.order.append(title)
+        if self._active is None:
+            self._active = title
         self._redraw_bar()
-        self._show_active()
-        return frm
+        self._show()
+        return self.tabs[title]
 
     def select(self, title):
-        if title not in self.tabs_frames:
-            return
-        self._active = title
-        self._redraw_bar()
-        self._show_active()
+        if isinstance(title, int):
+            title = self.order[title]
+        if title in self.tabs:
+            self._active = title
+            self._redraw_bar()
+            self._show()
 
     def current(self):
         return self._active
 
-    def _show_active(self):
-        for t, frm in self.tabs_frames.items():
+    def _show(self):
+        for frm in self.tabs.values():
             frm.pack_forget()
-        if self._active and self._active in self.tabs_frames:
-            self.tabs_frames[self._active].pack(fill="both", expand=True)
+        if self._active in self.tabs:
+            self.tabs[self._active].pack(fill="both", expand=True)
 
-    def _redraw_bar(self, _e=None):
-        c = self._bar_canvas
+    def _tab_rects(self):
+        w = max(2, self.bar.winfo_width())
+        n = max(1, len(self.order))
+        tw = max(70, (w - 8) // n)
+        rects = []
+        x = 4
+        for t in self.order:
+            rects.append((t, x, x + tw))
+            x += tw
+        return rects
+
+    def _redraw_bar(self):
+        c = self.bar
         c.delete("all")
         w = max(2, c.winfo_width())
         h = max(2, c.winfo_height())
-        _fill_bg_blocks(c, 0, 0, w, h, step=8)
+        _px(c, 0, 0, w, h, _T["panel"])
+        _px(c, 0, h - 2, w, 2, _T["border_dark"])
+        for (title, x1, x2) in self._tab_rects():
+            active = (title == self._active)
+            if active:
+                hi, base, lo, fg = _T["accent_light"], _T["accent"], _T["accent_dark"], "#ffffff"
+                y1, y2 = 2, h
+            else:
+                hi, base, lo, fg = _T["wood_light"], _T["wood"], _T["wood_dark"], _T["fg"]
+                y1, y2 = 6, h - 2
+            _px(c, x1, y1, x2 - x1, y2 - y1, base)
+            _px(c, x1, y1, x2 - x1, 4, hi)
+            _px(c, x1, y1, x2 - x1, y2 - y1, "", _T["border_dark"], 1)
+            if active:
+                _px(c, x1, y2 - 3, x2 - x1, 3, _T["panel"])  # активный язычок сливается с панелью
+            c.create_text((x1 + x2) // 2, (y1 + y2) // 2, text=title, fill=fg,
+                          font=("Segoe UI", 9, "bold"))
 
-        # Распределяем вкладки равномерно
-        pad = 6
-        cursor = 4
-        for tab in self.tabs_order:
-            # Ширина по тексту — пропорционально длине
-            tw = max(80, 12 * len(tab) + 24)
-            tw = min(tw, w // max(1, len(self.tabs_order)))
-            active = (tab == self._active)
-            color_base = _GREEN_BASE if active else _WOOD_BASE
-            color_hi = _GREEN_HI if active else _WOOD_HI
-            color_lo = _GREEN_LO if active else _WOOD_LO
-            txt_col = "#ffffff" if active else "#1a1a1a"
-            # Рисуем «язычок»
-            _pixel_rect(c, cursor, 8, tw, h - 8, color_base)
-            _pixel_rect(c, cursor, 8, tw, 4, color_hi)
-            _pixel_rect(c, cursor, h - 12, tw, 4, color_lo)
-            _pixel_rect(c, cursor, 8, tw, h - 8, outline=_BORDER_DARK, width=1)
-            c.create_text(cursor + tw // 2, h // 2 + 2, text=tab,
-                          fill=txt_col, font=("Segoe UI", 9, "bold"))
-            cursor += tw
-
-        # Нижняя линия пергамента под язычками
-        _pixel_rect(c, 0, h - 2, w, 2, _BORDER_DARK)
-
-        # Привязываем клики по язычкам
-        # (перепривязываем на каждом ресайзе, отвязав старые теги-привязки)
-        c.unbind("<Button-1>")
-        cursor = 4
-        for tab in self.tabs_order:
-            tw = max(80, 12 * len(tab) + 24)
-            tw = min(tw, w // max(1, len(self.tabs_order)))
-            x1, y1, x2, y2 = cursor, 8, cursor + tw, h
-            tag = "tab_" + tab
-            if c.find_withtag(tag):
-                c.delete(tag)
-            # Делаем прозрачный rect, чтобы перехватить клик
-            r = c.create_rectangle(x1, y1, x2, y2, fill="", outline="", tags=(tag,))
-            c.tag_bind(tag, "<Button-1>", lambda _e, t=tab: self.select(t))
-            c.tag_bind(tag, "<Enter>", lambda _e, r=r: c.itemconfigure(r, fill="#ffffff", stipple="gray12"))
-            c.tag_bind(tag, "<Leave>", lambda _e, r=r: c.itemconfigure(r, fill=""))
-            cursor += tw
-
-    def winfo_children(self):
-        # Возвращаем дочерние виджеты активной страницы — чтобы .pack() работал на MCTabs
-        if self._active and self._active in self.tabs_frames:
-            return self.tabs_frames[self._active].winfo_children()
-        return []
+    def _click(self, e):
+        for (title, x1, x2) in self._tab_rects():
+            if x1 <= e.x <= x2:
+                self.select(title)
+                return

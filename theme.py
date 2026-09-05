@@ -127,7 +127,7 @@ THEMES = {
         "silver": MC_PALETTE["silver"],
         "star": MC_PALETTE["star"],
         "font": ("Segoe UI", 10, "bold"),
-        "mc_font": _try_mc_font(),
+        "mc_font": None,  # вычисляется лениво в get_theme()
         "style": "minecraft",
     },
 }
@@ -165,7 +165,10 @@ def list_themes():
 
 
 def get_theme(name):
-    return THEMES.get(name) or THEMES["Майнкрафт"]
+    t = THEMES.get(name) or THEMES["Майнкрафт"]
+    if t.get("style") == "minecraft" and not t.get("mc_font"):
+        t["mc_font"] = _try_mc_font()
+    return t
 
 
 def default_theme():
