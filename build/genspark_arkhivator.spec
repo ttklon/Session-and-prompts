@@ -1,36 +1,54 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec для Windows-сборки.
-# Запуск: pyinstaller --noconfirm genspark_arkhivator.spec
-from pathlib import Path
-block_cipher = None
+"""PyInstaller spec для Genspark Arkhivator.
+Собирает один EXE: python gui.py — окно без консоли.
+Включает selectors.json и reference_screenshot.png как ресурсы.
+"""
+import os
 
-HERE = Path('.').resolve()
-RES = HERE / "data" ; RES.mkdir(exist_ok=True)
-CHATS = RES / "chats" ; CHATS.mkdir(exist_ok=True)
+block_cipher = None
+ROOT = os.path.abspath(os.path.join(os.path.dirname(SPEC), ".."))  # noqa: F821
 
 a = Analysis(
-    ['gui.py'],
-    pathex=[str(HERE)],
-    binaries=[], datas=[],
-    hiddenimports=[
-        'selenium','selenium.webdriver','selenium.webdriver.chrome',
-        'selenium.webdriver.chrome.options','selenium.webdriver.chrome.service',
-        'selenium.webdriver.edge','selenium.webdriver.edge.options',
-        'selenium.webdriver.common','selenium.webdriver.remote',
-        'requests','rapidfuzz','db','extractor','summarizer','search','theme',
+    [os.path.join(ROOT, "gui.py")],
+    pathex=[ROOT],
+    binaries=[],
+    datas=[
+        (os.path.join(ROOT, "selectors.json"), "."),
+        (os.path.join(ROOT, "reference_screenshot.png"), "."),
     ],
-    hookspath=[], runtime_hooks=[], excludes=['tkinter.test'],
-    win_no_prefer_redirects=False, win_private_assemblies=False,
-    cipher=block_cipher, noarchive=False,
+    hiddenimports=[
+        "db", "extractor", "summarizer", "theme", "widgets",
+        "search", "semantic_search", "duplicates", "prompts",
+    ],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=["playwright"],
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
+    noarchive=False,
 )
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
-exe = EXE(pyz, a.scripts, [],
-          name='GensparkArkhivator',
-          debug=False, bootloader_ignore_signals=False, strip=False,
-          upx=True, upx_exclude=[], runtime_tmpdir=None,
-          console=False, disable_windowed_traceback=False,
-          target_arch=None, codesign_identity=None,
-          entitlements_file=None, icon=None)
-coll = COLLECT(exe, a.binaries, a.zipfiles, a.datas,
-               strip=False, upx=True, upx_exclude=[],
-               name='GensparkArkhivator')
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)  # noqa: F821
+
+exe = EXE(  # noqa: F821
+    pyz,
+    a.scripts,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    [],
+    name="genspark_arkhivator",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
+    console=False,
+    disable_windowed_traceback=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+)
