@@ -1,0 +1,13 @@
+{
+  "_comment": "Настройки извлечения без изменения кода. expander_patterns — слова, по которым программа ищет свёрнутые блоки (агенты/инструменты/размышления/«показать ещё») и раскрывает их кликом. max_scrolls — сколько раз прокрутить страницу вниз для подгрузки. max_expand_rounds — сколько раз подряд пытаться раскрыть блоки на одном уровне прокрутки.",
+  "expander_patterns": [
+    "размышл", "мышлен", "thinking", "thought", "агент", "agent",
+    "инструмент", "tool", "раскрыт", "expand", "показать", "show",
+    "more", "ещё", "еще", "подробн", "detail", "свернут", "collaps"
+  ],
+  "wait_for_text": ["Genspark"],
+  "scroll_pause": 1.2,
+  "max_scrolls": 40,
+  "max_expand_rounds": 8,
+  "title_selectors": ["meta[property='og:title']", "meta[name='twitter:title']", "h1"]
+}
