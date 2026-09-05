@@ -1,7 +1,14 @@
 # -*- coding: utf-8 -*-
 """Обнаружение дубликатов и похожих чатов (пункт 8): сравнение по хэшу,
-по названию и по шинглам текста 5-словных окон."""
+по названию и по шинглам текста 5-словных окон.
+
+Замечание: в исходной версии функция дергала db.get_chat() без импорта —
+падало при первом вызове. Теперь модуль самодостаточный: возвращает
+уже переданные dict-чат без обращения к БД, а для надёжности шинглов
+читает первые ~600 символов TXT-файла чата, если путь существует.
+"""
 import hashlib
+import os
 import re
 
 _WORD = re.compile(r"[A-Za-zА-Яа-яЁё0-9]+")
@@ -26,30 +33,60 @@ def chat_signature(title, text):
     return h.hexdigest()
 
 
+def _first_chunks(chat):
+    """Склейка: заголовок + минимальное описание + первые 600 символов TXT."""
+    parts = [chat.get("title") or "", chat.get("desc_min") or ""]
+    txt = chat.get("txt_path") or ""
+    if txt and os.path.exists(txt):
+        try:
+            with open(txt, encoding="utf-8", errors="ignore") as f:
+                parts.append(f.read(600))
+        except Exception:
+            pass
+    return " ".join(parts)
+
+
 def find_duplicates(chats, threshold=0.55):
-    """Возвращает список пар (chat_a, chat_b, similarity) дубликатов/похожих."""
-    sigs = {}
+    """Список пар (chat_a, chat_b, similarity) дубликатов/похожих.
+
+    Использует ТОЛЬКО переданные словари, не обращается к БД.
+    Возвращает копии чатов (dict), отсортированные по убыванию похожести.
+    """
+    if not chats:
+        return []
+
+    by_id = {ch.get("chat_id"): ch for ch in chats}
+
+    # 1) Точные дубли по title+signature
     dups_by_sig = {}
     for ch in chats:
-        s = chat_signature(ch.get("title"), "")
-        sigs[ch["chat_id"]] = s
-        dups_by_sig.setdefault(s, []).append(ch["chat_id"])
+        sig = chat_signature(ch.get("title") or "", _first_chunks(ch))
+        dups_by_sig.setdefault(sig, []).append(ch["chat_id"])
+
     pairs = set()
     out = []
     for sig, ids in dups_by_sig.items():
-        if len(ids) > 1:
+        if len(ids) > 1 and sig.strip("0"):  # не нулевой хэш при пустых полях
             for i, a in enumerate(ids):
                 for b in ids[i + 1:]:
-                    pairs.add((a, b))
-                    out.append((db.get_chat(a), db.get_chat(b), 1.0))
-    # шинглы текста
-    sh = {ch["chat_id"]: _shingles(ch.get("title", "") + " " + (ch.get("desc_min") or "")) for ch in chats}
+                    pk = tuple(sorted((a, b)))
+                    if pk in pairs:
+                        continue
+                    pairs.add(pk)
+                    out.append((by_id[a], by_id[b], 1.0))
+
+    # 2) Похожие по шинглам 5-словных окон
+    sh = {ch["chat_id"]: _shingles(_first_chunks(ch)) for ch in chats}
     keys = list(sh.keys())
     for i, a in enumerate(keys):
         for b in keys[i + 1:]:
-            if (a, b) in pairs:
+            pk = tuple(sorted((a, b)))
+            if pk in pairs:
                 continue
             sim = jaccard(sh[a], sh[b])
             if sim >= threshold:
-                out.append((db.get_chat(a), db.get_chat(b), round(sim, 2)))
+                pairs.add(pk)
+                out.append((by_id[a], by_id[b], round(sim, 2)))
+
+    out.sort(key=lambda x: -x[2])
     return out
