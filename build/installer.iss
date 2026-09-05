@@ -17,7 +17,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 LicenseFile=
-OutputDir=dist_installer
+OutputDir=..\dist_installer
 OutputBaseFilename=genspark_arkhivator_setup
 Compression=lzma
 SolidCompression=yes
@@ -33,10 +33,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
 
 [Files]
-Source: "dist\genspark_arkhivator.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "selectors.json"; DestDir: "{app}"; Flags: ignoreversion
-Source: "reference_screenshot.png"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\genspark_arkhivator.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\selectors.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\reference_screenshot.png"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"

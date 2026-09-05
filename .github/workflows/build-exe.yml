@@ -93,9 +93,9 @@ jobs:
             --include-package=rapidfuzz `
             --include-package=certifi `
             --include-module=db,extractor,summarizer,theme,widgets,search,semantic_search,duplicates,prompts,compressor,patterns `
-            --include-data-file=selectors.json=. `
-            --include-data-file=reference_screenshot.png=. `
-            --include-data-file=icon.ico=. `
+            --include-data-file=selectors.json=selectors.json `
+            --include-data-file=reference_screenshot.png=reference_screenshot.png `
+            --include-data-file=icon.ico=icon.ico `
             --output-filename=genspark_arkhivator_nuitka.exe `
             gui.py
 
