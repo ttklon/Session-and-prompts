@@ -48,7 +48,7 @@ jobs:
           retention-days: 90
 
       - name: Build Inno Setup installer (setup.exe)
-        uses: Minionguyjpro/Inno-Setup-Action@1.2.4
+        uses: Minionguyjpro/Inno-Setup-Action@v1.2.4
         with:
           path: build/installer.iss
           args: /Q
